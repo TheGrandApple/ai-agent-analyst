@@ -1,0 +1,94 @@
+{
+  "name": "tool_load_dataset",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "67b860ea-1c7c-44e8-9ea3-db9f2c428c84",
+      "name": "When Called by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        480,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 << 'PYEOF'\nimport os\nimport json\nimport pickle\nimport pandas as pd\nimport urllib.request\n\nDATA_DIR = '/home/node/.n8n/ml_agent'\nCSV_PATH = os.path.join(DATA_DIR, 'spotify.csv')\nPKL_PATH = os.path.join(DATA_DIR, 'dataset_raw.pkl')\nURL = 'https://raw.githubusercontent.com/katechek/spotify-ml-dataset/main/spotify_songs_short.csv'\n\nresult = {}\n\ntry:\n    os.makedirs(DATA_DIR, exist_ok=True)\n\n    urllib.request.urlretrieve(URL, CSV_PATH)\n\n    df = pd.read_csv(CSV_PATH)\n\n    if 'Unnamed: 0' in df.columns:\n        df = df.drop(columns=['Unnamed: 0'])\n\n    with open(PKL_PATH, 'wb') as f:\n        pickle.dump(df, f)\n\n    num_cols = df.select_dtypes(include='number').columns.tolist()\n    date_cols = df.select_dtypes(include=['datetime']).columns.tolist()\n    text_cols = df.select_dtypes(exclude=['number', 'datetime']).columns.tolist()\n\n    summary = (\n        f\"Размер: {df.shape[0]} объектов и {df.shape[1]} признаков.\\n\"\n        f\"Числовые признаки: {', '.join(num_cols)}.\\n\"\n        f\"Текстовые признаки: {', '.join(text_cols)}.\\n\"\n        f\"Datetime признаки: {', '.join(date_cols)}.\\n\"\n    )\n\n    result['status'] = 'success'\n    result['summary'] = summary\n    result['pkl_path'] = PKL_PATH\n    result['first_row'] = df.iloc[0].to_dict()\n    result['second_row'] = df.iloc[1].to_dict()\n\nexcept Exception as e:\n    result['status'] = 'error'\n    result['error'] = str(e)\n\nprint(json.dumps(result, default=str, indent=2, ensure_ascii=False))\nPYEOF"
+      },
+      "id": "015afc8a-4e42-459a-b37a-e4fe6dd86e28",
+      "name": "Run Loader (Python)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        752,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import json\n\ninput_data = _items[0][\"json\"]\n\nraw = (input_data.get(\"stdout\") or \"\").strip()\n\ntry:\n    parsed = json.loads(raw)\nexcept Exception as e:\n    parsed = {\n        \"status\": \"parse_error\",\n        \"parse_error\": str(e),\n    }\n\nif parsed.get(\"status\") == \"success\":\n    agent_response = parsed.get(\"summary\")\nelse:\n    agent_response = f\"ERROR {parsed.get('error') or parsed.get('parse_error')}\"\n\nreturn [\n    {\n        \"json\": {\n            \"output\": agent_response,   # ВАЖНО\n            \"status\": parsed.get(\"status\"),\n            \"pkl_path\": parsed.get(\"pkl_path\"),\n            \"first_row\": parsed.get(\"first_row\"),\n            \"second_row\": parsed.get(\"second_row\"),\n        }\n    }\n]\n\nreturn result"
+      },
+      "id": "d4d411d5-a0da-4e74-b5c2-ff540139bd1b",
+      "name": "Format Response for Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "ЗАГРУЗКА ДАТАСЕТА "
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        688,
+        -96
+      ],
+      "id": "35317b62-aa03-4b0a-bbaf-4b8d1ea14949",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Called by Agent": {
+      "main": [
+        [
+          {
+            "node": "Run Loader (Python)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Loader (Python)": {
+      "main": [
+        [
+          {
+            "node": "Format Response for Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "0696bd8c-dd14-499c-b69c-a30b1479292e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "2bzLkfQ78pjkNBVy",
+  "tags": []
+}

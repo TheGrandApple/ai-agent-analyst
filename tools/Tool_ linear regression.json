@@ -1,0 +1,81 @@
+{
+  "name": "Tool: linear regression",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import json\nimport re\n\ndata = _items[0][\"json\"]\nout = (data.get(\"stdout\") or \"\").strip()\nerr = (data.get(\"stderr\") or \"\").strip()\n\nif not out:\n    if err:\n        agent_response = f\"Ошибка выполнения: {err[:500]}\"\n    else:\n        agent_response = \"Скрипт ничего не вывел. Возможно, не хватило памяти или процесс был убит.\"\n    \n    return [{\n        \"json\": {\n            \"output\": agent_response,\n            \"status\": \"error\",\n            \"stderr\": err[:500] if err else None\n        }\n    }]\n\n# ищем JSON в выводе\njson_match = re.search(r'\\{.*\\}$', out, re.DOTALL)\nif json_match:\n    json_str = json_match.group()\nelse:\n    json_str = out\n\ntry:\n    parsed = json.loads(json_str)\nexcept Exception as e:\n    parsed = {\n        \"status\": \"parse_error\",\n        \"parse_error\": str(e),\n        \"raw\": out[:500]\n    }\n\nif parsed.get(\"status\") == \"success\":\n    agent_response = parsed.get(\"summary\")\nelse:\n    err_msg = parsed.get(\"error\") or parsed.get(\"parse_error\") or \"неизвестная ошибка\"\n    agent_response = f\"Ошибка при обучении модели: {err_msg}\"\n\n# берём метрики с train\ntrain_metrics = parsed.get(\"train_metrics\", {})\nif train_metrics:\n    rmse = train_metrics.get(\"rmse\", \"N/A\")\n    mae = train_metrics.get(\"mae\", \"N/A\")\n    r2 = train_metrics.get(\"r2\", \"N/A\")\n    if isinstance(rmse, (int, float)):\n        rmse = f\"{rmse:.2f}\"\n    if isinstance(mae, (int, float)):\n        mae = f\"{mae:.2f}\"\n    if isinstance(r2, (int, float)):\n        r2 = f\"{r2:.4f}\"\nelse:\n    rmse = mae = r2 = \"N/A\"\n\nreturn [\n    {\n        \"json\": {\n            \"output\": agent_response,\n            \"status\": parsed.get(\"status\"),\n            \"summary\": parsed.get(\"summary\"),\n            \"candidate_path\": parsed.get(\"candidate_path\"),\n            \"train_metrics\": {\n                \"rmse\": rmse,\n                \"mae\": mae,\n                \"r2\": r2\n            },\n            \"model_type\": parsed.get(\"model_type\"),\n            \"train_time_sec\": parsed.get(\"train_time_sec\"),\n            \"feature_count\": parsed.get(\"feature_count\"),\n            \"intercept\": parsed.get(\"intercept\")\n        }\n    }\n]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        352
+      ],
+      "id": "91cdeacb-2459-4459-9d43-0e219f3b0680",
+      "name": "Code in Python1"
+    },
+    {
+      "parameters": {
+        "command": "=export PARAMS='{{ JSON.stringify($json) }}'\n\npython3 << 'PYEOF'\nimport os, json, pickle, traceback, time\nimport numpy as np\nimport pandas as pd\nfrom sklearn.linear_model import LinearRegression\nfrom sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score\nfrom sklearn.preprocessing import LabelEncoder\nimport warnings\nwarnings.filterwarnings('ignore')\n\nDATA_DIR = '/home/node/.n8n/ml_agent'\nX_TRAIN_PATH = os.path.join(DATA_DIR, 'X_train.pkl')\nY_TRAIN_PATH = os.path.join(DATA_DIR, 'y_train.pkl')\n\nMODELS_DIR = os.path.join(DATA_DIR, 'models')\nos.makedirs(MODELS_DIR, exist_ok=True)\n\nresult = {}\n\ntry:\n    raw = os.environ.get(\"PARAMS\", \"\")\n    params = json.loads(raw) if raw else {}\n    \n    if 'query' in params and isinstance(params['query'], str):\n        try:\n            agent_params = json.loads(params['query'])\n        except:\n            agent_params = {}\n    else:\n        agent_params = params\n    \n    # загружаем train данные\n    if not os.path.exists(X_TRAIN_PATH):\n        raise RuntimeError(f\"X_train.pkl not found at {X_TRAIN_PATH}\")\n    \n    if not os.path.exists(Y_TRAIN_PATH):\n        raise RuntimeError(f\"y_train.pkl not found at {Y_TRAIN_PATH}\")\n    \n    print(\"Loading from X_train.pkl and y_train.pkl...\", flush=True)\n    with open(X_TRAIN_PATH, 'rb') as f:\n        X_train = pickle.load(f)\n    with open(Y_TRAIN_PATH, 'rb') as f:\n        y_train = pickle.load(f)\n    \n    # проверяем и чистим NaN в y_train\n    y_train = np.array(y_train)\n    nan_mask = np.isnan(y_train)\n    \n    if nan_mask.any():\n        nan_count = nan_mask.sum()\n        print(f\"Found {nan_count} NaN values in y_train. Removing them...\", flush=True)\n        y_train = y_train[~nan_mask]\n        X_train = X_train[~nan_mask]\n        print(f\"Removed {nan_count} rows. New shape: X_train={X_train.shape}\", flush=True)\n    \n    if not isinstance(X_train, pd.DataFrame):\n        X_train = pd.DataFrame(X_train)\n    \n    # заполняем оставшиеся NaN в X_train\n    if X_train.isnull().any().any():\n        print(f\"Filling remaining NaN values in X_train with 0...\", flush=True)\n        X_train = X_train.fillna(0)\n    \n    X_train = X_train.astype(float)\n    y_train = np.array(y_train, dtype=float)\n    \n    feature_names = X_train.columns.tolist()\n    print(f\"Data ready: X_train shape={X_train.shape}\", flush=True)\n    \n    # обучаем Linear Regression\n    t0 = time.time()\n    model = LinearRegression()\n    model.fit(X_train, y_train)\n    train_time = time.time() - t0\n    \n    # считаем предсказания и метрики на train\n    y_pred_train = model.predict(X_train)\n    \n    train_rmse = float(np.sqrt(mean_squared_error(y_train, y_pred_train)))\n    train_mae = float(mean_absolute_error(y_train, y_pred_train))\n    train_r2 = float(r2_score(y_train, y_pred_train))\n    \n    coefficients = model.coef_\n    intercept = model.intercept_\n    \n    model_type = 'linear_regression'\n    candidate_path = os.path.join(MODELS_DIR, f'{model_type}_candidate.pkl')\n    with open(candidate_path, 'wb') as f:\n        pickle.dump({\n            'model': model,\n            'model_type': model_type,\n            'feature_names': feature_names,\n            'coefficients': coefficients.tolist(),\n            'intercept': float(intercept),\n            'train_metrics': {\n                'rmse': train_rmse,\n                'mae': train_mae,\n                'r2': train_r2\n            }\n        }, f)\n    \n    # отчёт с метриками на train\n    lines = [\n        f\"Linear Regression trained.\",\n        f\"Training time: {train_time:.2f}s.\",\n        f\"Training samples: {X_train.shape[0]}\",\n        f\"Features: {len(feature_names)}\",\n        f\"\",\n        f\"TRAIN metrics:\",\n        f\"  RMSE = {train_rmse:.2f} (ниже — лучше)\",\n        f\"  MAE  = {train_mae:.2f} (ниже — лучше)\",\n        f\"  R²   = {train_r2:.4f} (выше — лучше, максимум 1.0)\",\n    ]\n    \n    lines.append(f\"\")\n    lines.append(f\"Saved: {candidate_path}\")\n    \n    result['status'] = 'success'\n    result['summary'] = '\\n'.join(lines)\n    result['model_type'] = model_type\n    result['candidate_path'] = candidate_path\n    result['train_time_sec'] = round(train_time, 1)\n    result['feature_count'] = len(feature_names)\n    result['intercept'] = float(intercept)\n    result['train_metrics'] = {\n        'rmse': train_rmse,\n        'mae': train_mae,\n        'r2': train_r2\n    }\n\nexcept Exception as e:\n    result['status'] = 'error'\n    result['error'] = str(e)\n    result['traceback'] = traceback.format_exc()\n\nprint(json.dumps(result, ensure_ascii=False, default=str))\nPYEOF"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        496,
+        464
+      ],
+      "id": "b55b3c82-71d7-4487-974c-59207c84708b",
+      "name": "Execute Command1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Execute Command1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command1": {
+      "main": [
+        [
+          {
+            "node": "Code in Python1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "328f283b-8b8c-406d-b068-c01a8ff02345",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "mWCqclHhm5D3iXsU",
+  "tags": []
+}

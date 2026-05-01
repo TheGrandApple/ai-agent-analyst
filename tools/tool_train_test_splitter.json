@@ -1,0 +1,81 @@
+{
+  "name": "tool_train_test_splitter",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=export PARAMS='{{ JSON.stringify($json) }}'\n\npython3 << 'PYEOF'\nimport os, json\nimport pickle\nfrom sklearn.model_selection import train_test_split\n\nresult = {}\n\ntry:\n    raw = os.environ.get(\"PARAMS\", \"\")\n    data = json.loads(raw) if raw else {}\n\n    data = data.get(\"query\")\n    if isinstance(data, str):\n        data = json.loads(data)\n\n    TARGET_VALUE = data.get(\"target_value\")\n    TEST_SIZE = float(data.get(\"test_size\", 0.2))\n\n    if not TARGET_VALUE:\n        raise ValueError(f\"target_value not provided. got: {data}\")\n\n    df = pickle.load(open('/home/node/.n8n/ml_agent/dataset_clean.pkl', 'rb'))\n\n    if TARGET_VALUE not in df.columns:\n        raise ValueError(f\"column '{TARGET_VALUE}' not found\")\n\n    X = df.drop(columns=[TARGET_VALUE])\n    y = df[TARGET_VALUE]\n\n    X_train, X_test, y_train, y_test = train_test_split(\n        X, y,\n        test_size=TEST_SIZE,\n        random_state=93\n    )\n\n    base_path = '/home/node/.n8n/ml_agent/'\n\n    paths = {\n        \"X_train\": base_path + \"X_train.pkl\",\n        \"X_test\": base_path + \"X_test.pkl\",\n        \"y_train\": base_path + \"y_train.pkl\",\n        \"y_test\": base_path + \"y_test.pkl\",\n    }\n\n    pickle.dump(X_train, open(paths[\"X_train\"], 'wb'))\n    pickle.dump(X_test, open(paths[\"X_test\"], 'wb'))\n    pickle.dump(y_train, open(paths[\"y_train\"], 'wb'))\n    pickle.dump(y_test, open(paths[\"y_test\"], 'wb'))\n\n    result['status'] = 'success'\n    result['error'] = None\n    result['files'] = paths\n    result['summary'] = (\n        f\"Train: {X_train.shape[0]} строк, {X_train.shape[1]} признаков\\n\"\n        f\"Test: {X_test.shape[0]} строк, {X_test.shape[1]} признаков\\n\"\n        f\"target: {TARGET_VALUE}, test_size: {TEST_SIZE}\\n\"\n        f\"Сохранено 4 файла (X/y train/test).\"\n    )\n\nexcept Exception as e:\n    result['status'] = 'error'\n    result['error'] = str(e)\n\nprint(json.dumps(result, ensure_ascii=False, indent=2))\nPYEOF"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        480,
+        352
+      ],
+      "id": "5e661509-ef6a-4077-930c-29cfc0908264",
+      "name": "Execute Command"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import json\n\ninput_data = _items[0][\"json\"]\n\nraw = (input_data.get(\"stdout\") or \"\").strip()\n\ntry:\n    parsed = json.loads(raw)\nexcept Exception as e:\n    parsed = {\n        \"status\": \"parse_error\",\n        \"parse_error\": str(e),\n    }\n\nif parsed.get(\"status\") == \"success\":\n    agent_response = parsed.get(\"summary\")\nelse:\n    agent_response = f\"ERROR {parsed.get('error') or parsed.get('parse_error')}\"\n\nreturn [\n    {\n        \"json\": {\n            \"output\": agent_response,  \n            \"status\": parsed.get(\"status\"),\n            \"pkl_path\": \"/home/node/.n8n/ml_agent/train_test_split.pkl\"\n        }\n    }\n]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        352
+      ],
+      "id": "84054096-6500-4f4e-87b2-4a1bd128c4fe",
+      "name": "Code in Python"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Agent": {
+      "main": [
+        [
+          {
+            "node": "Execute Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command": {
+      "main": [
+        [
+          {
+            "node": "Code in Python",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "7f38b8bd-65f8-4c87-aca6-7428f0123a72",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "P2Ims1SXFrpwCsAO",
+  "tags": []
+}

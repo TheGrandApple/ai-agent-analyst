@@ -1,0 +1,79 @@
+{
+  "name": "tool_execute_python",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "fc2f6342-d38f-465d-a80f-ff14679a996d",
+      "name": "When Called by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "={{ $json.command }}"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        448,
+        0
+      ],
+      "id": "1ff3aba1-44b7-4c70-8a57-0a2653636f58",
+      "name": "Execute Command"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.query ?? '';\n\n\nconst code = raw.replace(/\\\\n/g, '\\n');\n\nreturn [{ json: { command: code } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "f1c19639-656c-45ed-93df-435c202cbf9a",
+      "name": "Code in JavaScript"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Called by Agent": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Execute Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "a070a3d1-cea3-45a0-bc0c-660a30452758",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "vHiaLAH9qhKp7bre",
+  "tags": []
+}

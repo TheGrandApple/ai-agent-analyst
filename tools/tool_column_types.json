@@ -1,0 +1,56 @@
+{
+  "name": "tool_column_types",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        96,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=export DATA='{{ JSON.stringify($json) }}'\n\npython3 << 'PYEOF'\nimport os, json\n\nDATA_DIR = '/home/node/.n8n/ml_agent'\nJSON_PATH = os.path.join(DATA_DIR, 'column_types.json')\n\ndata = json.loads(os.environ[\"DATA\"])\n\nif isinstance(data, dict) and \"query\" in data:\n    try:\n        data = json.loads(data[\"query\"])\n    except:\n        pass\n\nwith open(JSON_PATH, 'w', encoding='utf-8') as f:\n    json.dump(data, f, ensure_ascii=False, indent=2)\n\nprint(json.dumps({\n    \"status\": \"ok\",\n    \"data\": data\n}))\nPYEOF"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        336,
+        352
+      ],
+      "id": "7326b271-949e-4985-a0b5-5359020ff695",
+      "name": "Execute Command"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Agent": {
+      "main": [
+        [
+          {
+            "node": "Execute Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "e6b76a7e-2f86-4890-b395-db68c59f0531",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "ov7Q1WyFqnbtMVSm",
+  "tags": []
+}

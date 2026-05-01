@@ -1,0 +1,95 @@
+{
+  "name": "tool_na_count",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 << 'PYEOF'\n\nimport os, json\nimport pickle\nimport pandas as pd\n\nDATA_DIR = '/home/node/.n8n/ml_agent'\n\nresult = {}\n\ntry:\n    df = pickle.load(open('/home/node/.n8n/ml_agent/dataset_raw.pkl', 'rb'))\n\n    nas = df.isnull().sum()\n    nas_pr = (nas / len(df) * 100).round(2)\n\n    report = pd.DataFrame({'count': nas, 'pct': nas_pr}).sort_values(by='count', ascending=False)\n    col_nas = report[report['count'] > 0]\n\n    if col_nas.empty:\n        summary = \"Пропущенных значений нет.\"\n    else:\n        summary = (\n            f\"Найдено {len(col_nas)} колонок с пропусками.\\n\"\n            f\"{col_nas}\"\n        )\n\n    result['status'] = 'success'\n    result['error'] = None\n    result['summary'] = summary\n\nexcept Exception as e:\n    result['status'] = 'error'\n    result['error'] = str(e)\n\nprint(json.dumps(result, ensure_ascii=False, indent=2))\n\nPYEOF"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        560,
+        352
+      ],
+      "id": "adffd221-b177-4f23-9403-395d85018016",
+      "name": "Execute Command"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import json\n\ninput_data = _items[0][\"json\"]\n\nraw = (input_data.get(\"stdout\") or \"\").strip()\n\ntry:\n    parsed = json.loads(raw)\nexcept Exception as e:\n    parsed = {\n        \"status\": \"parse_error\",\n        \"parse_error\": str(e),\n    }\n\nif parsed.get(\"status\") == \"success\":\n    agent_response = parsed.get(\"summary\")\nelse:\n    agent_response = f\"ERROR {parsed.get('error') or parsed.get('parse_error')}\"\n\nreturn [\n    {\n        \"json\": {\n            \"output\": agent_response,\n            \"status\": parsed.get(\"status\"),\n            \"summary\": parsed.get(\"summary\"),\n            \"error\": parsed.get(\"error\"),\n        }\n    }\n]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        352
+      ],
+      "id": "377d88ef-7920-432d-8af6-7480ad74fb57",
+      "name": "Code in Python"
+    },
+    {
+      "parameters": {
+        "content": "ПОДСЧЕТ ПРОПУСКОВ",
+        "width": 256
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        480,
+        176
+      ],
+      "id": "4a01697f-30b2-481d-aefd-1c914879fa0d",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Agent": {
+      "main": [
+        [
+          {
+            "node": "Execute Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command": {
+      "main": [
+        [
+          {
+            "node": "Code in Python",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "61e51b36-81a8-471e-8031-c6f419bc05d5",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "S97MDzMMXMEAsn04",
+  "tags": []
+}

@@ -1,0 +1,81 @@
+{
+  "name": "tool_knn",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=python3 << 'PYEOF'\nimport os, json, pickle, traceback, time\nimport numpy as np\nimport pandas as pd\nfrom sklearn.neighbors import KNeighborsClassifier\nfrom sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score\nfrom sklearn.preprocessing import LabelEncoder, StandardScaler\nimport warnings\nwarnings.filterwarnings('ignore')\n\nDATA_DIR = '/home/node/.n8n/ml_agent'\nMODELS_DIR = f'{DATA_DIR}/models'\nos.makedirs(MODELS_DIR, exist_ok=True)\n\nresult = {}\n\ntry:\n    # --- загрузка train ---\n    X_train = pickle.load(open(f'{DATA_DIR}/X_train.pkl', 'rb'))\n    y_train = pd.Series(pickle.load(open(f'{DATA_DIR}/y_train.pkl', 'rb')))\n\n    # --- чистим NaN ---\n    mask = ~(pd.isna(y_train) | X_train.isnull().any(axis=1))\n    X_train, y_train = X_train[mask].copy(), y_train[mask].values\n\n    # --- кодируем категориальные ---\n    for col in X_train.select_dtypes(include=['object', 'category']).columns:\n        X_train[col] = LabelEncoder().fit_transform(X_train[col].astype(str))\n\n    X_train = X_train.astype(float)\n    feature_names = X_train.columns.tolist()\n    n_classes = len(np.unique(y_train))\n\n    # --- масштабирование (для KNN критично) ---\n    scaler = StandardScaler()\n    X_train_scaled = scaler.fit_transform(X_train)\n\n    # --- обучение ---\n    t0 = time.time()\n    model = KNeighborsClassifier(n_neighbors=5, n_jobs=-1)\n    model.fit(X_train_scaled, y_train)\n    train_time = time.time() - t0\n\n    # --- метрики ---\n    y_pred = model.predict(X_train_scaled)\n    y_proba = model.predict_proba(X_train_scaled)\n    train_metrics = {\n        'accuracy': float(accuracy_score(y_train, y_pred)),\n        'precision': float(precision_score(y_train, y_pred, average='weighted', zero_division=0)),\n        'recall': float(recall_score(y_train, y_pred, average='weighted', zero_division=0)),\n        'f1': float(f1_score(y_train, y_pred, average='weighted', zero_division=0)),\n        'roc_auc': float(roc_auc_score(y_train, y_proba[:, 1])) if n_classes == 2\n                    else float(roc_auc_score(y_train, y_proba, multi_class='ovr', average='weighted')),\n    }\n\n    # --- сохранение ---\n    model_type = 'knn_classifier'\n    candidate_path = f'{MODELS_DIR}/{model_type}_candidate.pkl'\n    pickle.dump({\n        'model': model,\n        'model_type': model_type,\n        'scaler': scaler,\n        'feature_names': feature_names,\n        'n_classes': n_classes,\n        'train_metrics': train_metrics,\n    }, open(candidate_path, 'wb'))\n\n    # --- summary ---\n    lines = [\n        \"KNN Classifier trained.\",\n        f\"Number of classes: {n_classes}\",\n        f\"Training time: {train_time:.2f}s.\",\n        f\"Training samples: {X_train_scaled.shape[0]}\",\n        f\"Features: {len(feature_names)}\",\n        \"\",\n        \"TRAIN metrics:\",\n        f\"  Accuracy  = {train_metrics['accuracy']:.4f} (выше — лучше)\",\n        f\"  Precision = {train_metrics['precision']:.4f} (выше — лучше)\",\n        f\"  Recall    = {train_metrics['recall']:.4f} (выше — лучше)\",\n        f\"  F1 Score  = {train_metrics['f1']:.4f} (выше — лучше)\",\n        f\"  ROC-AUC   = {train_metrics['roc_auc']:.4f} (выше — лучше)\",\n        \"\",\n        f\"Saved: {candidate_path}\",\n    ]\n\n    result.update({\n        'status': 'success',\n        'summary': '\\n'.join(lines),\n        'model_type': model_type,\n        'candidate_path': candidate_path,\n        'train_time_sec': round(train_time, 1),\n        'feature_count': len(feature_names),\n        'n_classes': n_classes,\n        'train_metrics': train_metrics,\n    })\n\nexcept Exception as e:\n    result['status'] = 'error'\n    result['error'] = str(e)\n    result['traceback'] = traceback.format_exc()\n\nprint(json.dumps(result, ensure_ascii=False, default=str))\nPYEOF"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        464,
+        352
+      ],
+      "id": "f2a6a8ac-5990-40aa-a43d-c96c0df047f1",
+      "name": "Execute Command1"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import json\n\ndata = _items[0][\"json\"]\nout = data.get(\"stdout\")\nerr = data.get(\"stderr\")\n\n# 1. Если скрипт ничего не вывел — сразу ошибка\nif not out:\n    msg = f\"Ошибка выполнения: {err[:500]}\" if err else \"Скрипт ничего не вывел.\"\n    return [{\"json\": {\"output\": msg, \"status\": \"error\", \"stderr\": err[:500] or None}}]\n\n# 2. Парсим JSON\ntry:\n    parsed = json.loads(out)\nexcept Exception as e:\n    parsed = {\"status\": \"parse_error\", \"error\": str(e), \"raw\": out[:500]}\n\n# 3. Сообщение для агента\nif parsed.get(\"status\") == \"success\":\n    agent_response = parsed.get(\"summary\")\nelse:\n    agent_response = f\"Ошибка при обучении модели: {parsed.get('error') or 'неизвестная ошибка'}\"\n\n# 4. Форматируем метрики (числа -> строки с 4 знаками, иначе \"N/A\")\nraw_metrics = parsed.get(\"train_metrics\", {})\ntrain_metrics = {}\n\nfor key in [\"accuracy\", \"precision\", \"recall\", \"f1\", \"roc_auc\"]:\n    value = raw_metrics.get(key)\n    if isinstance(value, (int, float)):\n        train_metrics[key] = f\"{value:.4f}\"\n    else:\n        train_metrics[key] = \"N/A\"\n\n      \n# 5. Собираем результат\nreturn [{\n    \"json\": {\n        \"output\": agent_response,\n        \"status\": parsed.get(\"status\"),\n        \"summary\": parsed.get(\"summary\"),\n        \"candidate_path\": parsed.get(\"candidate_path\"),\n        \"model_type\": parsed.get(\"model_type\"),\n        \"train_time_sec\": parsed.get(\"train_time_sec\"),\n        \"feature_count\": parsed.get(\"feature_count\"),\n        \"n_classes\": parsed.get(\"n_classes\"),\n        \"train_metrics\": train_metrics,\n    }\n}]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        352
+      ],
+      "id": "f915beec-0c0f-4031-a099-0e4f65d6f55d",
+      "name": "Code in Python1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Execute Command1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command1": {
+      "main": [
+        [
+          {
+            "node": "Code in Python1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "1d61cd2b-d154-4af4-b896-c4c2343a1c5f",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "SgDTTIBwFqDt8qVQ",
+  "tags": []
+}

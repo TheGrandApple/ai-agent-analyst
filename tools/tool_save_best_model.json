@@ -1,0 +1,103 @@
+{
+  "name": "tool_save_best_model",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "b187c4c7-8144-4473-bdbe-7ef053bf0a23",
+      "name": "When Called by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst query = input.query || input.input || input.model_type || JSON.stringify(input);\n\nlet modelType = '';\nconst lc = String(query).toLowerCase();\nif (lc.includes('ridge')) modelType = 'ridge';\nelse if (lc.includes('lasso')) modelType = 'lasso';\nelse if (lc.includes('forest') || lc.includes('rf')) modelType = 'random_forest';\nelse if (lc.includes('gradient') || lc.includes('boost')) modelType = 'gradient_boosting';\nelse if (lc.includes('decision') || lc.includes('tree')) modelType = 'decision_tree';\nelse if (lc.includes('knn')) modelType = 'knn';\nelse if (lc.includes('best')) modelType = 'BEST';\n\nreturn [{ json: { model_type: modelType, raw_query: String(query) } }];"
+      },
+      "id": "f712c4fe-2f3c-4280-ab44-ef3392875925",
+      "name": "Parse Agent Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=MODEL_TYPE='{{ $json.model_type }}' python3 << 'PYEOF'\nimport os, json, pickle, traceback, glob\nfrom datetime import datetime\n\nDATA_DIR = '/home/node/.n8n/ml_agent'\nMODELS_DIR = os.path.join(DATA_DIR, 'models')\nBEST_PATH = os.path.join(DATA_DIR, 'best_model.pkl')\nHISTORY_PATH = os.path.join(DATA_DIR, 'history.json')\n\nresult = {}\n\ntry:\n    requested = os.environ.get('MODEL_TYPE', '').strip()\n\n    # Find candidate to save: either the named one, or the best among candidates\n    candidates = glob.glob(os.path.join(MODELS_DIR, '*_candidate.pkl'))\n    if not candidates:\n        raise RuntimeError('No trained candidate models found. Call tool_train_and_evaluate first.')\n\n    # Load all candidates and pick by request\n    cand_data = {}\n    for path in candidates:\n        with open(path, 'rb') as f:\n            d = pickle.load(f)\n            cand_data[d['model_type']] = (d, path)\n\n    if requested and requested != 'BEST' and requested in cand_data:\n        chosen_type, (chosen_data, chosen_path) = requested, cand_data[requested]\n    else:\n        # Pick by best test R2 among candidates\n        chosen_type = max(cand_data.keys(), key=lambda k: cand_data[k][0]['metrics']['test']['r2'])\n        chosen_data, chosen_path = cand_data[chosen_type]\n\n    new_r2 = chosen_data['metrics']['test']['r2']\n    new_rmse = chosen_data['metrics']['test']['rmse']\n\n    # Load history\n    history = []\n    if os.path.exists(HISTORY_PATH):\n        with open(HISTORY_PATH, 'r') as f:\n            try:\n                history = json.load(f)\n                if not isinstance(history, list):\n                    history = []\n            except Exception:\n                history = []\n\n    # Compare with previous best\n    prev_best = None\n    if os.path.exists(BEST_PATH):\n        with open(BEST_PATH, 'rb') as f:\n            prev_best = pickle.load(f)\n\n    is_new_best = (prev_best is None) or (new_r2 > prev_best['metrics']['test']['r2'])\n\n    comparison_lines = []\n    if prev_best is None:\n        comparison_lines.append('No previous best model found. This is the first save.')\n        action = 'saved_first'\n    else:\n        prev_r2 = prev_best['metrics']['test']['r2']\n        prev_rmse = prev_best['metrics']['test']['rmse']\n        prev_type = prev_best.get('model_type', 'unknown')\n        delta_r2 = new_r2 - prev_r2\n        comparison_lines.append(f\"Previous best: {prev_type} R2={prev_r2:.4f} RMSE={prev_rmse:.2f}\")\n        comparison_lines.append(f\"Current candidate: {chosen_type} R2={new_r2:.4f} RMSE={new_rmse:.2f}\")\n        comparison_lines.append(f\"Delta R2: {delta_r2:+.4f}\")\n        if is_new_best:\n            comparison_lines.append(f\"=> Improvement of {delta_r2:+.4f} R2 -- saving as new best.\")\n            action = 'saved_better'\n        else:\n            comparison_lines.append(f\"=> Not better. Keeping previous best.\")\n            action = 'kept_previous'\n\n    # Save best model if better\n    if is_new_best:\n        with open(BEST_PATH, 'wb') as f:\n            pickle.dump(chosen_data, f)\n\n    # Append to history\n    history_entry = {\n        'timestamp': datetime.now().isoformat(),\n        'model_type': chosen_type,\n        'tuned': chosen_data.get('tuned', False),\n        'metrics': chosen_data['metrics'],\n        'is_new_best': is_new_best,\n        'action': action\n    }\n    history.append(history_entry)\n    with open(HISTORY_PATH, 'w') as f:\n        json.dump(history, f, indent=2, default=str)\n\n    # Build response\n    lines = [\n        f\"=== SAVE BEST MODEL ===\",\n        f\"Candidate chosen: {chosen_type} (test R2={new_r2:.4f}, RMSE={new_rmse:.2f})\",\n        '',\n        '\\n'.join(comparison_lines),\n        '',\n        f\"History contains {len(history)} runs across all sessions.\",\n        f\"Best model saved to {BEST_PATH}\" if is_new_best else f\"Best model unchanged at {BEST_PATH}\",\n        f\"Full history at {HISTORY_PATH}\"\n    ]\n\n    # Show last 3 runs from history for context\n    if len(history) > 1:\n        lines.append('')\n        lines.append('Last runs:')\n        for h in history[-5:]:\n            ts = h.get('timestamp', '')[:19]\n            r2 = h.get('metrics', {}).get('test', {}).get('r2', 0)\n            mt = h.get('model_type', '?')\n            best_marker = ' [NEW BEST]' if h.get('is_new_best') else ''\n            lines.append(f\"  {ts}  {mt}: R2={r2:.4f}{best_marker}\")\n\n    result['status'] = 'success'\n    result['summary'] = '\\n'.join(lines)\n    result['chosen_model'] = chosen_type\n    result['is_new_best'] = is_new_best\n    result['new_r2'] = new_r2\n    result['history_runs'] = len(history)\n\nexcept Exception as e:\n    result['status'] = 'error'\n    result['error'] = str(e)\n    result['error_type'] = type(e).__name__\n    result['traceback'] = traceback.format_exc()\n\nprint(json.dumps(result, default=str))\nPYEOF"
+      },
+      "id": "cc344a99-343b-4f15-a2cd-3b5d316b6a50",
+      "name": "Save & Compare",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        432,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst raw = (input.stdout || '').trim();\n\nlet parsed;\ntry { parsed = JSON.parse(raw); } catch (e) {\n  parsed = { status: 'parse_error', parse_error: e.message, raw_stdout: raw.slice(0, 1500), raw_stderr: (input.stderr || '').slice(0, 500), exit_code: input.exitCode };\n}\n\nconst agentResponse = parsed.status === 'success'\n  ? parsed.summary\n  : `ERROR: ${parsed.error || parsed.parse_error || 'unknown'}\\n${parsed.traceback || ''}`;\n\nreturn [{\n  json: {\n    response: agentResponse,\n    status: parsed.status,\n    chosen_model: parsed.chosen_model,\n    is_new_best: parsed.is_new_best,\n    history_runs: parsed.history_runs,\n    _debug: parsed\n  }\n}];"
+      },
+      "id": "f2017050-8eae-4199-8324-132fea5d36e0",
+      "name": "Format Response for Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        0
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Called by Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Input": {
+      "main": [
+        [
+          {
+            "node": "Save & Compare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save & Compare": {
+      "main": [
+        [
+          {
+            "node": "Format Response for Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "bc226df4-ca9d-4282-971b-f1708014d44e",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "0dqB2bB9clR3a5mp",
+  "tags": []
+}

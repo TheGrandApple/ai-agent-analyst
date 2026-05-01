@@ -1,0 +1,94 @@
+{
+  "name": "tool_outlier_analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=export TARGET_VALUE='{{ JSON.stringify($json)}}'\n\npython3 << 'PYEOF'\nimport os, json\nimport pickle\nimport pandas as pd\n\nresult = {}\n\ntry:\n    data = json.loads(os.environ.get(\"TARGET_VALUE\", \"[]\"))\n    TARGET_VALUE = data.get(\"query\")\n\n    df = pickle.load(open('/home/node/.n8n/ml_agent/dataset_clean.pkl', 'rb'))\n    num_cols = df.select_dtypes(include='number').columns.tolist()\n\n    if TARGET_VALUE in num_cols:\n        num_cols.remove(TARGET_VALUE)\n\n    outlier_rows = []\n    for col in num_cols:\n        q1 = df[col].quantile(0.25)\n        q3 = df[col].quantile(0.75)\n        iqr = q3 - q1\n        mask = (df[col] < q1 - 1.5*iqr) | (df[col] > q3 + 1.5*iqr)\n        n_out = int(mask.sum())\n        pr = round(n_out/len(df) * 100, 2)\n\n        if n_out > 0:\n            outlier_rows.append({\n                \"column\": col,\n                \"outliers_count\": n_out,\n                \"outliers_pr\": pr\n            })\n\n    if len(outlier_rows) == 0:\n        summary = \"Выбросы не обнаружены ни в одном числовом признаке.\"\n    else:\n        summary = (\n            f\"Признаков с выбросами: {len(outlier_rows)}.\\n\"\n            f\"{outlier_rows}\"\n        )\n\n    result['status'] = 'success'\n    result['error'] = None\n    result['summary'] = summary\n\nexcept Exception as e:\n    result['status'] = 'error'\n    result['error'] = str(e)\n\nprint(json.dumps(result, ensure_ascii=False, indent=2))\nPYEOF"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        480,
+        352
+      ],
+      "id": "34915a30-4c85-4b5d-9443-69c60c8c5952",
+      "name": "Execute Command"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import json\n\ninput_data = _items[0][\"json\"]\n\nraw = (input_data.get(\"stdout\") or \"\").strip()\n\ntry:\n    parsed = json.loads(raw)\nexcept Exception as e:\n    parsed = {\n        \"status\": \"parse_error\",\n        \"parse_error\": str(e),\n    }\n\nif parsed.get(\"status\") == \"success\":\n    agent_response = parsed.get(\"summary\")\nelse:\n    agent_response = f\"ERROR {parsed.get('error') or parsed.get('parse_error')}\"\n\nreturn [\n    {\n        \"json\": {\n            \"output\": agent_response,\n            \"status\": parsed.get(\"status\"),\n            \"summary\": parsed.get(\"summary\"),\n            \"error\": parsed.get(\"error\"),\n        }\n    }\n]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        656,
+        352
+      ],
+      "id": "0f5630c8-d477-4acd-a653-9b7bdb2dc1d3",
+      "name": "Code in Python"
+    },
+    {
+      "parameters": {
+        "content": "ПОИСК ВЫБРОСОВ"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        432,
+        160
+      ],
+      "id": "ecfb5cea-d0b9-4a91-b602-216315c71f76",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Agent": {
+      "main": [
+        [
+          {
+            "node": "Execute Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command": {
+      "main": [
+        [
+          {
+            "node": "Code in Python",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "59f31298-d183-4014-988d-672b85ab4bcf",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "uLq48cSVNSX23Yhj",
+  "tags": []
+}

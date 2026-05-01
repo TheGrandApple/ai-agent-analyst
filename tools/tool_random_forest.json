@@ -1,0 +1,81 @@
+{
+  "name": "tool_random_forest",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import json\nimport re\n\ndata = _items[0][\"json\"]\nout = data.get(\"stdout\")\nerr = data.get(\"stderr\")\n\n# 1. Если скрипт ничего не вывел — сразу ошибка\nif not out:\n    msg = f\"Ошибка выполнения: {err[:500]}\" if err else \"Скрипт ничего не вывел.\"\n    return [{\"json\": {\"output\": msg, \"status\": \"error\", \"stderr\": err[:500] or None}}]\n\n# 2. Вытаскиваем JSON-объект из вывода (мог быть мусор от sklearn перед ним)\njson_str = out[out.find(\"{\"):]\nparsed = json.loads(json_str)\n\ntry:\n    parsed = json.loads(json_str)\nexcept Exception as e:\n    parsed = {\"status\": \"parse_error\", \"error\": str(e), \"raw\": out[:500]}\n\n# 3. Сообщение для агента\nif parsed.get(\"status\") == \"success\":\n    agent_response = parsed.get(\"summary\")\nelse:\n    agent_response = f\"Ошибка при обучении модели: {parsed.get('error') or 'неизвестная ошибка'}\"\n\n# 4. Форматируем метрики регрессии\nraw_metrics = parsed.get(\"train_metrics\") or {}\ntrain_metrics = {}\n\nfor key, fmt in [(\"rmse\", \".2f\"), (\"mae\", \".2f\"), (\"r2\", \".4f\")]:\n    value = raw_metrics.get(key)\n    if isinstance(value, (int, float)):\n        train_metrics[key] = format(value, fmt)\n    else:\n        train_metrics[key] = \"N/A\"\n\n# 5. Собираем результат\nreturn [{\n    \"json\": {\n        \"output\": agent_response,\n        \"status\": parsed.get(\"status\"),\n        \"summary\": parsed.get(\"summary\"),\n        \"candidate_path\": parsed.get(\"candidate_path\"),\n        \"model_type\": parsed.get(\"model_type\"),\n        \"train_time_sec\": parsed.get(\"train_time_sec\"),\n        \"feature_count\": parsed.get(\"feature_count\"),\n        \"train_metrics\": train_metrics,\n    }\n}]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        352
+      ],
+      "id": "7528cb1c-c8b6-4336-b96e-7b62901ba119",
+      "name": "Code in Python1"
+    },
+    {
+      "parameters": {
+        "command": "python3 << 'PYEOF'\nimport os, json, pickle, traceback, time, warnings\nimport numpy as np, pandas as pd\nfrom sklearn.ensemble import RandomForestRegressor\nfrom sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score\nfrom sklearn.preprocessing import LabelEncoder\nwarnings.filterwarnings('ignore')\n\nDATA_DIR = '/home/node/.n8n/ml_agent'\nos.makedirs(f'{DATA_DIR}/models', exist_ok=True)\nresult = {}\n\ntry:\n    # --- загрузка train ---\n    X_train = pickle.load(open(f'{DATA_DIR}/X_train.pkl', 'rb'))\n    y_train = pd.Series(pickle.load(open(f'{DATA_DIR}/y_train.pkl', 'rb')))\n\n    # --- чистим NaN в y ---\n    mask = ~pd.isna(y_train)\n    X_train, y_train = X_train[mask].copy(), y_train[mask].values.astype(float)\n\n    # --- кодируем категориальные ---\n    for col in X_train.select_dtypes(include=['object', 'category']).columns:\n        X_train[col] = LabelEncoder().fit_transform(X_train[col].fillna(\"missing\").astype(str))\n\n    X_train = X_train.fillna(0).astype(float)\n    feature_names = X_train.columns.tolist()\n\n    # --- обучение ---\n    t0 = time.time()\n    model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)\n    model.fit(X_train, y_train)\n    train_time = time.time() - t0\n\n    # --- метрики ---\n    y_pred = model.predict(X_train)\n    train_metrics = {\n        'rmse': float(np.sqrt(mean_squared_error(y_train, y_pred))),\n        'mae': float(mean_absolute_error(y_train, y_pred)),\n        'r2': float(r2_score(y_train, y_pred)),\n    }\n\n    # --- сохранение ---\n    model_type = 'random_forest'\n    candidate_path = f'{DATA_DIR}/models/{model_type}_candidate.pkl'\n    pickle.dump({\n        'model': model,\n        'model_type': model_type,\n        'feature_names': feature_names,\n        'feature_importance': model.feature_importances_.tolist(),\n        'train_metrics': train_metrics,\n    }, open(candidate_path, 'wb'))\n\n    # --- summary ---\n    summary = (\n        f\"Random Forest trained.\\n\"\n        f\"Training time: {train_time:.2f}s.\\n\"\n        f\"Training samples: {X_train.shape[0]}\\n\"\n        f\"Features: {len(feature_names)}\\n\\n\"\n        f\"TRAIN metrics:\\n\"\n        f\"  RMSE = {train_metrics['rmse']:.2f} (ниже — лучше)\\n\"\n        f\"  MAE  = {train_metrics['mae']:.2f} (ниже — лучше)\\n\"\n        f\"  R²   = {train_metrics['r2']:.4f} (выше — лучше, максимум 1.0)\\n\\n\"\n        f\"Saved: {candidate_path}\"\n    )\n\n    result.update({\n        'status': 'success',\n        'summary': summary,\n        'model_type': model_type,\n        'candidate_path': candidate_path,\n        'train_time_sec': round(train_time, 1),\n        'feature_count': len(feature_names),\n        'train_metrics': train_metrics,\n    })\n\nexcept Exception as e:\n    result.update(status='error', error=str(e), traceback=traceback.format_exc())\n\nprint(json.dumps(result, ensure_ascii=False, default=str))\nPYEOF"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        480,
+        352
+      ],
+      "id": "8013b410-d504-4a13-b792-31e54b8b63ab",
+      "name": "Execute Command1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Execute Command1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command1": {
+      "main": [
+        [
+          {
+            "node": "Code in Python1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "fc55a5c9-39ba-42e3-92e0-b3be1b2fc89d",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "Ds0euyrtL3gV9ghQ",
+  "tags": []
+}

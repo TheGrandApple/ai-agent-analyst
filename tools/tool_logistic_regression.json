@@ -1,0 +1,81 @@
+{
+  "name": "tool_logistic_regression",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=export PARAMS='{{ JSON.stringify($json) }}'\n\npython3 << 'PYEOF'\nimport os, json, pickle, traceback, time, warnings\nimport numpy as np\nimport pandas as pd\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score\nfrom sklearn.preprocessing import LabelEncoder, StandardScaler\n\nwarnings.filterwarnings(\"ignore\")\n\nDATA_DIR = \"/home/node/.n8n/ml_agent\"\nMODELS_DIR = os.path.join(DATA_DIR, \"models\")\nos.makedirs(MODELS_DIR, exist_ok=True)\n\nX_PATH = os.path.join(DATA_DIR, \"X_train.pkl\")\nY_PATH = os.path.join(DATA_DIR, \"y_train.pkl\")\nOUT_PATH = os.path.join(MODELS_DIR, \"logistic_regression_candidate.pkl\")\n\nresult = {}\n\ntry:\n    # params оставлены для совместимости с n8n\n    params = json.loads(os.environ.get(\"PARAMS\", \"{}\") or \"{}\")\n    if isinstance(params.get(\"query\"), str):\n        try:\n            params = json.loads(params[\"query\"])\n        except Exception:\n            pass\n\n    for path in [X_PATH, Y_PATH]:\n        if not os.path.exists(path):\n            raise FileNotFoundError(path)\n\n    with open(X_PATH, \"rb\") as f:\n        X = pickle.load(f)\n    with open(Y_PATH, \"rb\") as f:\n        y = pickle.load(f)\n\n    X = pd.DataFrame(X)\n    y = np.asarray(y)\n\n    # чистим NaN\n    mask = ~pd.isna(y)\n    X, y = X.loc[mask].copy(), y[mask]\n\n    mask = ~X.isna().any(axis=1)\n    X, y = X.loc[mask].copy(), y[mask]\n\n    # кодируем категориальные признаки\n    for col in X.select_dtypes(include=[\"object\", \"category\"]).columns:\n        X[col] = LabelEncoder().fit_transform(X[col].astype(str))\n\n    X = X.astype(float)\n    y = y.astype(float)\n\n    feature_names = X.columns.tolist()\n    n_classes = len(np.unique(y))\n\n    scaler = StandardScaler()\n    X_scaled = scaler.fit_transform(X)\n\n    model = LogisticRegression(\n        max_iter=1000,\n        random_state=42,\n        solver=\"lbfgs\",\n        n_jobs=-1\n    )\n\n    t0 = time.time()\n    model.fit(X_scaled, y)\n    train_time = time.time() - t0\n\n    y_pred = model.predict(X_scaled)\n\n    metrics = {\n        \"accuracy\": float(accuracy_score(y, y_pred)),\n        \"precision\": float(precision_score(y, y_pred, average=\"weighted\", zero_division=0)),\n        \"recall\": float(recall_score(y, y_pred, average=\"weighted\", zero_division=0)),\n        \"f1\": float(f1_score(y, y_pred, average=\"weighted\", zero_division=0)),\n        \"roc_auc\": None,\n    }\n\n    try:\n        proba = model.predict_proba(X_scaled)\n        metrics[\"roc_auc\"] = float(\n            roc_auc_score(\n                y,\n                proba[:, 1] if n_classes == 2 else proba,\n                multi_class=\"ovr\" if n_classes > 2 else \"raise\",\n                average=\"weighted\"\n            )\n        )\n    except Exception:\n        pass\n\n    with open(OUT_PATH, \"wb\") as f:\n        pickle.dump({\n            \"model\": model,\n            \"model_type\": \"logistic_regression\",\n            \"scaler\": scaler,\n            \"feature_names\": feature_names,\n            \"n_classes\": n_classes,\n            \"coefficients\": model.coef_.tolist(),\n            \"intercept\": model.intercept_.tolist(),\n            \"train_metrics\": metrics,\n        }, f)\n\n    summary = [\n        \"Logistic Regression trained.\",\n        f\"Number of classes: {n_classes}\",\n        f\"Training time: {train_time:.2f}s\",\n        f\"Training samples: {X_scaled.shape[0]}\",\n        f\"Features: {len(feature_names)}\",\n        \"\",\n        \"TRAIN metrics:\",\n        f\"  Accuracy  = {metrics['accuracy']:.4f}\",\n        f\"  Precision = {metrics['precision']:.4f}\",\n        f\"  Recall    = {metrics['recall']:.4f}\",\n        f\"  F1 Score  = {metrics['f1']:.4f}\",\n    ]\n\n    if metrics[\"roc_auc\"] is not None:\n        summary.append(f\"  ROC-AUC   = {metrics['roc_auc']:.4f}\")\n\n    summary += [\"\", f\"Saved: {OUT_PATH}\"]\n\n    result = {\n        \"status\": \"success\",\n        \"summary\": \"\\n\".join(summary),\n        \"model_type\": \"logistic_regression\",\n        \"candidate_path\": OUT_PATH,\n        \"train_time_sec\": round(train_time, 1),\n        \"feature_count\": len(feature_names),\n        \"n_classes\": n_classes,\n        \"train_metrics\": metrics,\n    }\n\nexcept Exception as e:\n    result = {\n        \"status\": \"error\",\n        \"error\": str(e),\n        \"traceback\": traceback.format_exc(),\n    }\n\nprint(json.dumps(result, ensure_ascii=False, default=str))\nPYEOF"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        480,
+        352
+      ],
+      "id": "37c6b483-8c78-493f-8654-d40f12a55d71",
+      "name": "Execute Command"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import json\nimport re\n\ndata = _items[0][\"json\"]\nout = (data.get(\"stdout\") or \"\").strip()\nerr = (data.get(\"stderr\") or \"\").strip()\n\nif not out:\n    if err:\n        agent_response = f\"Ошибка выполнения: {err[:500]}\"\n    else:\n        agent_response = \"Скрипт ничего не вывел. Возможно, не хватило памяти или процесс был убит.\"\n    \n    return [{\n        \"json\": {\n            \"output\": agent_response,\n            \"status\": \"error\",\n            \"stderr\": err[:500] if err else None\n        }\n    }]\n\n# ищем JSON в выводе\njson_match = re.search(r'\\{.*\\}$', out, re.DOTALL)\nif json_match:\n    json_str = json_match.group()\nelse:\n    json_str = out\n\ntry:\n    parsed = json.loads(json_str)\nexcept Exception as e:\n    parsed = {\n        \"status\": \"parse_error\",\n        \"parse_error\": str(e),\n        \"raw\": out[:500]\n    }\n\nif parsed.get(\"status\") == \"success\":\n    agent_response = parsed.get(\"summary\")\nelse:\n    err_msg = parsed.get(\"error\") or parsed.get(\"parse_error\") or \"неизвестная ошибка\"\n    agent_response = f\"Ошибка при обучении модели: {err_msg}\"\n\n# берём метрики с train для классификации\ntrain_metrics = parsed.get(\"train_metrics\", {})\nif train_metrics:\n    accuracy = train_metrics.get(\"accuracy\", \"N/A\")\n    precision = train_metrics.get(\"precision\", \"N/A\")\n    recall = train_metrics.get(\"recall\", \"N/A\")\n    f1 = train_metrics.get(\"f1\", \"N/A\")\n    roc_auc = train_metrics.get(\"roc_auc\", \"N/A\")\n    \n    if isinstance(accuracy, (int, float)):\n        accuracy = f\"{accuracy:.4f}\"\n    if isinstance(precision, (int, float)):\n        precision = f\"{precision:.4f}\"\n    if isinstance(recall, (int, float)):\n        recall = f\"{recall:.4f}\"\n    if isinstance(f1, (int, float)):\n        f1 = f\"{f1:.4f}\"\n    if isinstance(roc_auc, (int, float)):\n        roc_auc = f\"{roc_auc:.4f}\"\nelse:\n    accuracy = precision = recall = f1 = roc_auc = \"N/A\"\n\nreturn [\n    {\n        \"json\": {\n            \"output\": agent_response,\n            \"status\": parsed.get(\"status\"),\n            \"summary\": parsed.get(\"summary\"),\n            \"candidate_path\": parsed.get(\"candidate_path\"),\n            \"train_metrics\": {\n                \"accuracy\": accuracy,\n                \"precision\": precision,\n                \"recall\": recall,\n                \"f1\": f1,\n                \"roc_auc\": roc_auc\n            },\n            \"model_type\": parsed.get(\"model_type\"),\n            \"train_time_sec\": parsed.get(\"train_time_sec\"),\n            \"feature_count\": parsed.get(\"feature_count\"),\n            \"n_classes\": parsed.get(\"n_classes\"),\n            \"intercept\": parsed.get(\"intercept\")\n        }\n    }\n]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        352
+      ],
+      "id": "4e4b873d-d68c-44ec-8ec6-1c22e3697857",
+      "name": "Code in Python"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Execute Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command": {
+      "main": [
+        [
+          {
+            "node": "Code in Python",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "7f4d9d2d-7666-48c9-8c6d-605bba0a68ef",
+  "meta": {
+    "instanceId": "8f88e1bd7f84819a6815ccdffe75b9931d61d84560b2fbf5341ae1c6ebac613e"
+  },
+  "id": "whQLF5ekyPY0rFkR",
+  "tags": []
+}
